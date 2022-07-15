@@ -1,17 +1,29 @@
-use emu_chip8_core::{display::DisplayData, Machine, disassemble_program, disassemble_program_at};
+use emu_chip8_core::{display::DisplayData, Machine, disassemble_program_at};
 use sdl2::{render::{Texture, Canvas}, pixels::{Color, PixelFormatEnum, PixelFormat}, event::Event, keyboard::Keycode, video::Window, Sdl};
 use std::{time::{Duration, Instant}, collections::HashMap};
+use std::env::args;
 
 fn main() {
-
-
-    let prog = std::fs::read("./progs/Astro Dodge Hires [Revival Studios, 2008].ch8").unwrap();
-
-    disassemble_program_at(&prog, 0xAE);
-    return;
-     
-    let machine = Machine::new(&prog, 60000.0);
-    run_sdl(machine);
+    let args: Vec<String> = args().collect();
+    if args.len() < 2 || (args[1] == "D" && args.len() != 4) || (args[1] != "D" && args.len() != 2) {
+        println!("Wrong number of cmd line args!\nUse <filepath> to run or D <filepath> <start addr in hex> to disassemble");
+        return;
+    }
+ 
+    if args[1] == "D" {
+        let program = std::fs::read(&args[2]).unwrap();
+        let start = u16::from_str_radix(&args[3], 16)
+            .expect("Starting addr must be valid 16 bit hexadecimal");
+        if start < 0x200 {
+            println!("Starting address should be at least 0x200");
+            return;
+        }
+        println!("{}", disassemble_program_at(&program, (start - 0x200) as usize));
+    } else {
+        let program = std::fs::read(&args[1]).unwrap();
+        let machine = Machine::new(&program, 10000.0);
+        run_sdl(machine);
+    }
 }
 
 struct SDLData {
@@ -71,6 +83,7 @@ fn main_sdl_loop(sdl_data: SDLData, mut tex_data: EmuTexture, mut machine: Machi
 
     let mut dur: Duration;
     let mut start = Instant::now();
+    let mut draw_t = Duration::ZERO;
     'running: loop {
         canvas.clear();
         for event in event_pump.poll_iter() {
@@ -87,7 +100,7 @@ fn main_sdl_loop(sdl_data: SDLData, mut tex_data: EmuTexture, mut machine: Machi
                 },
                 Event::KeyUp { keycode: Some(k), .. } => {
                     match keyboard_mappings.get(&k) {
-                        Some(v) => machine.press_key(*v),
+                        Some(v) => machine.release_key(*v),
                         None => {}
                     }
                 },
@@ -97,16 +110,20 @@ fn main_sdl_loop(sdl_data: SDLData, mut tex_data: EmuTexture, mut machine: Machi
         dur = Instant::now().duration_since(start);
         start = Instant::now();
         machine.run(dur);
-
-        if machine.display_data().updated_this_cycle {
+        
+        draw_t += dur;
+        let draw_update_freq = Duration::from_secs_f64(1f64 / 60f64);
+        if draw_t > draw_update_freq {
             update_tex(&mut tex_data.tex, machine.display_data(),
             Color::WHITE.to_u32(&tex_data.format),
             Color::BLACK.to_u32(&tex_data.format)
-        );
+            );
+            canvas.copy(&tex_data.tex, None, None).unwrap();
+            canvas.present();
+            draw_t -= draw_update_freq;
         }
-        canvas.copy(&tex_data.tex, None, None).unwrap();
-        canvas.present();
-        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+
+        std::thread::sleep(Duration::new(0, 1_000));
     }
 }
 
@@ -125,7 +142,6 @@ fn update_tex(tex: &mut Texture, dd: &DisplayData, color_on: u32, color_off: u32
     }).unwrap();
 }
 
-//TODO make this an array?
 fn default_keyboard_mappings() -> HashMap<Keycode, u8> {
     let mut mappings = HashMap::with_capacity(0x10);
     mappings.insert(Keycode::X, 0);
