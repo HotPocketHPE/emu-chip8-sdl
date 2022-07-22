@@ -1,11 +1,13 @@
 mod audio;
+pub mod run_mode;
 
 use audio::{init_audio, SquareWave};
 use emu_chip8_core::{display::DisplayData, machine::Machine, disassembler::disassemble_program_at, timer::Timer};
+use run_mode::RunMode;
 use sdl2::{
     audio::AudioDevice,
     event::Event,
-    keyboard::Keycode,
+    keyboard::{Keycode, Mod},
     pixels::{Color, PixelFormat, PixelFormatEnum},
     render::{Canvas, Texture},
     video::Window,
@@ -14,7 +16,7 @@ use sdl2::{
 use std::env::args;
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 fn main() {
@@ -40,6 +42,11 @@ fn main() {
             let machine = Machine::new(&program);
             run_sdl(machine, RunMode::DebugStep);
         },
+        "DBG_COND" => {
+            let program = std::fs::read(&args[2]).unwrap();
+            let machine = Machine::new(&program);
+            run_sdl(machine, RunMode::DebugCond);
+        }
         _ => {
             let program = std::fs::read(&args[1]).unwrap();
             let machine = Machine::new(&program);
@@ -64,7 +71,7 @@ fn validate_args(args: &Vec<String>) -> Result<(), String> {
                 return Err(error_msg("4", args.len()));
             }
         },
-        "DBG" => {
+        "DBG" | "DBG_COND" => {
             if args.len() != 3 {
                 return Err(error_msg("3", args.len()))
             }
@@ -134,12 +141,9 @@ fn init_sdl() -> SDLData {
     };
 }
 
-enum RunMode {
-    Normal,
-    DebugStep,
-}
 
-fn main_sdl_loop(sdl_data: SDLData, mut tex_data: EmuTexture, mut machine: Machine, run_mode: RunMode) {
+
+fn main_sdl_loop(sdl_data: SDLData, mut tex_data: EmuTexture, mut machine: Machine, mut run_mode: RunMode) {
     let mut event_pump = sdl_data.sdl_context.event_pump().unwrap();
     let mut canvas = sdl_data.canvas;
     canvas.set_draw_color(Color::WHITE);
@@ -157,26 +161,47 @@ fn main_sdl_loop(sdl_data: SDLData, mut tex_data: EmuTexture, mut machine: Machi
                 Event::Quit { .. } | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => 
                     break 'running,
                 Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
-                    match run_mode {
-                        RunMode::Normal => {},
-                        RunMode::DebugStep => println!("{}", machine.run_step_debug()),
+                    if let RunMode::DebugStep | RunMode::DebugCondStep = run_mode {
+                        println!("{}", machine.run_step_debug())
                     }
-                }, 
-                Event::KeyDown { keycode: Some(k), .. } => 
-                    match keyboard_mappings.get(&k) {
-                        Some(v) => machine.press_key(*v),
-                        None => {}
                 },
-                Event::KeyUp { keycode: Some(k), .. } => 
-                    match keyboard_mappings.get(&k) {
-                        Some(v) => machine.release_key(*v),
-                        None => {}
+                Event::KeyDown { keycode: Some(k @ (Keycode::Num1 | Keycode::Num2 | Keycode::Num3 | Keycode::Num4 | Keycode::Num5 | Keycode::Num6)),
+                    keymod: m @ (Mod::RSHIFTMOD | Mod::RCTRLMOD), .. } => {
+
                 },
+                Event::KeyDown { keycode: Some(Keycode::P), .. } => {
+                    if let RunMode::DebugRunning = run_mode {
+                        println!("Entering debug stepping...");
+                        run_mode = run_mode.pause().unwrap();
+                        machine.pause_timers();
+                    }
+                },
+                Event::KeyDown { keycode: Some(Keycode::N), .. } => {
+                    match run_mode.resume() {
+                        Ok(new_mode) => {
+                            println!("Resuming...");
+                            run_mode = new_mode;
+                            machine.resume_timers();
+                        },
+                        Err(_) => {},
+                    }
+                },
+                Event::KeyDown { keycode: Some(k), .. } if matches!(keyboard_mappings.get(&k), Some(_)) =>         
+                    machine.press_key(*keyboard_mappings.get(&k).unwrap()),
+                Event::KeyUp { keycode: Some(k), .. } if matches!(keyboard_mappings.get(&k), Some(_)) =>         
+                    machine.release_key(*keyboard_mappings.get(&k).unwrap()),
                 _ => {}
             }
         }
-        if let RunMode::Normal = run_mode {
+        if let RunMode::Normal | RunMode::DebugRunning | RunMode::DebugCond = run_mode {
             machine.run();
+        }
+        if let RunMode::DebugCond = run_mode {
+            if machine.debug_cond() {
+                println!("Debug condition reached!");
+                run_mode = RunMode::DebugCondStep;
+                println!("{}", machine.run_step_debug());
+            }
         }
 
         if audio_last_state != machine.should_make_sound() {
